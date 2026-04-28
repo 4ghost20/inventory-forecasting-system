@@ -1,52 +1,49 @@
 import pandas as pd
 import os
-import matplotlib.pyplot as plt # Day 6 requirement
+import matplotlib.pyplot as plt
 from statsmodels.tsa.arima.model import ARIMA
 
+# --- REUSABLE MODULES ---
+
 def load_and_prep_data(file_path, product_name):
+    """Cleans and resamples data for a specific product."""
     df = pd.read_csv(file_path)
     product_df = df[df['product'] == product_name].copy()
     product_df['date'] = pd.to_datetime(product_df['date'])
     product_df.set_index('date', inplace=True)
-    daily_series = product_df['quantity'].resample('D').sum().fillna(0)
-    return daily_series
+    return product_df['quantity'].resample('D').sum().fillna(0)
 
 def run_forecast(series, steps=7):
+    """Runs the ARIMA(1,1,1) model."""
     model = ARIMA(series, order=(1, 1, 1))
     model_fit = model.fit()
-    forecast = model_fit.forecast(steps=steps)
-    return forecast
+    return model_fit.forecast(steps=steps)
 
-# Day 6 Logic: Plotting results
-def plot_forecast(history, forecast, product_name):
-    try:
-        # 1. Setup the figure
-        plt.figure(figsize=(10, 5))
-        plt.plot(history.index, history.values, label='Historical Sales', marker='o')
-        plt.plot(forecast.index, forecast.values, label='7-Day Forecast', linestyle='--', color='red', marker='x')
-        
-        plt.title(f"Demand Forecast for {product_name}")
-        plt.xlabel("Date")
-        plt.ylabel("Quantity")
-        plt.legend()
-        plt.grid(True)
+# --- DAY 7 MASTER FUNCTION ---
 
-        # 2. Show the plot (Interactive window)
-        plt.show()
-
-        # 3. Attempt to save, but don't crash if it fails
-        # This keeps the "launch" safe even if file permissions are weird
-        save_path = "forecast_results.png"
-        plt.savefig(save_path)
-        print(f"Success: Plot displayed and saved to {save_path}")
-
-    except Exception as e:
-        print(f"Visualization Note: The math worked, but the chart had an issue: {e}")
-
-if __name__ == "__main__":
-    data_file = os.path.join('data', 'sample_data.csv')
-    ts_data = load_and_prep_data(data_file, 'Widget_A')
+def forecast_product(product_name):
+    """
+    The main entry point to forecast any product.
+    This will be the core of our Week 2 multi-product loop.
+    """
+    print(f"\n--- Starting Forecast for: {product_name} ---")
+    
+    # Path to data
+    data_path = os.path.join('data', 'sample_data.csv')
+    
+    # Step 1: Prepare
+    ts_data = load_and_prep_data(data_path, product_name)
+    
+    # Step 2: Forecast
     predictions = run_forecast(ts_data)
     
-    # Run the visualization
-    plot_forecast(ts_data, predictions, 'Widget_A')
+    # Step 3: Print results (for now)
+    print(f"Predicted demand for next 7 days:")
+    print(predictions)
+    
+    return predictions
+
+if __name__ == "__main__":
+    # Now you can forecast ANY product by just changing this name!
+    forecast_product('Widget_A')
+    forecast_product('Gadget_B')
