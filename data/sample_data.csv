@@ -1,0 +1,15 @@
+date,product,quantity
+2026-04-01,Widget_A,10
+2026-04-02,Widget_A,12
+2026-04-03,Widget_A,15
+2026-04-04,Widget_A,14
+2026-04-05,Widget_A,20
+2026-04-06,Widget_A,18
+2026-04-07,Widget_A,22
+2026-04-01,Gadget_B,5
+2026-04-02,Gadget_B,7
+2026-04-03,Gadget_B,6
+2026-04-04,Gadget_B,8
+2026-04-05,Gadget_B,10
+2026-04-06,Gadget_B,9
+2026-04-07,Gadget_B,12
