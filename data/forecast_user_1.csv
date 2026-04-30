@@ -1,0 +1,15 @@
+product,forecast_date,predicted_quantity
+Widget_A,2026-04-08,15.23
+Widget_A,2026-04-09,19.28
+Widget_A,2026-04-10,16.86
+Widget_A,2026-04-11,18.3
+Widget_A,2026-04-12,17.44
+Widget_A,2026-04-13,17.96
+Widget_A,2026-04-14,17.65
+Gadget_B,2026-04-08,10.8
+Gadget_B,2026-04-09,11.46
+Gadget_B,2026-04-10,11.1
+Gadget_B,2026-04-11,11.3
+Gadget_B,2026-04-12,11.19
+Gadget_B,2026-04-13,11.25
+Gadget_B,2026-04-14,11.21
