@@ -100,18 +100,18 @@ else:
     if page == "Dashboard":
         st.title(f"📊 {username}'s Dashboard")
         conn = sqlite3.connect('inventory_system.db')
-        inv_df = pd.read_sql(f"SELECT * FROM inventory WHERE user_id = {uid}", conn)
+        inv_df = pd.read_sql("SELECT * FROM inventory WHERE user_id = ?", conn, params=(uid,))
         
         if not inv_df.empty:
             sel_prod = st.selectbox("Select Product", inv_df['product'].unique())
             prod_info = inv_df[inv_df['product'] == sel_prod].iloc[0]
 
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Current Stock", f"{int(prod_info['current_stock'])}")
+            
             if os.path.exists(user_forecast_path):
                 f_df = pd.read_csv(user_forecast_path)
                 prod_f = f_df[f_df['product'] == sel_prod]
-                
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Current Stock", f"{int(prod_info['current_stock'])}")
                 
                 if not prod_f.empty:
                     demand = int(prod_f['predicted_quantity'].sum())
@@ -146,7 +146,13 @@ else:
                             m1.metric("Data Points", int(prod_metrics['data_points'].values[0]))
                             m2.metric("Forecast Status", prod_metrics['forecast_status'].values[0])
                             m3.metric("Accuracy", prod_metrics['accuracy'].values[0])
+                else:
+                    c2.metric("7-Day Forecast", "No data")
+                    c3.metric("Stock Gap", "N/A")
+                    st.info("No forecast data available for this product. Run forecast again or add more sales history.")
             else:
+                c2.metric("7-Day Forecast", "Not run")
+                c3.metric("Stock Gap", "N/A")
                 st.warning("🔄 Run forecast to see AI predictions.")
         else:
             st.info("Inventory is empty. Add items in 'Add Data'.")
@@ -164,13 +170,17 @@ else:
                 ds = st.date_input("Date of Sale")
                 qs = st.number_input("Qty Sold", min_value=1)
                 if st.form_submit_button("Submit Sale"):
-                    if not ps:
+                    if not ps or len(ps.strip()) == 0:
                         st.error("❌ Product name cannot be empty.")
+                    elif len(ps) > 100:
+                        st.error("❌ Product name too long (max 100 characters).")
                     elif qs <= 0:
                         st.error("❌ Quantity must be greater than 0.")
+                    elif ds > pd.Timestamp.today():
+                        st.error("❌ Sale date cannot be in the future.")
                     else:
                         conn = sqlite3.connect('inventory_system.db')
-                        check = pd.read_sql(f"SELECT current_stock FROM inventory WHERE product='{ps}' AND user_id={uid}", conn)
+                        check = pd.read_sql("SELECT current_stock FROM inventory WHERE product=? AND user_id=?", conn, params=(ps, uid))
                         conn.close()
                         if not check.empty and check.iloc[0]['current_stock'] >= qs:
                             result = add_sales_record(uid, ps, ds, qs)
@@ -208,10 +218,14 @@ else:
                 rp = st.number_input("Reorder Point", min_value=1, value=10, 
                                    help="Stock level that triggers reordering")
                 if st.form_submit_button("Register Product"):
-                    if not pn:
+                    if not pn or len(pn.strip()) == 0:
                         st.error("❌ Product name cannot be empty.")
+                    elif len(pn) > 100:
+                        st.error("❌ Product name too long (max 100 characters).")
                     elif sn < 0:
                         st.error("❌ Stock cannot be negative.")
+                    elif rp <= 0:
+                        st.error("❌ Reorder point must be greater than 0.")
                     else:
                         add_new_inventory_item(uid, pn, sn, rp)
                         st.success(f"✅ {pn} registered with reorder point at {rp} units.")
@@ -226,7 +240,7 @@ else:
         c_del1, c_del2 = st.columns(2)
         
         with c_del1:
-            sales_hist = pd.read_sql(f"SELECT * FROM sales WHERE user_id = {uid} ORDER BY id DESC LIMIT 5", conn)
+            sales_hist = pd.read_sql("SELECT * FROM sales WHERE user_id = ? ORDER BY id DESC LIMIT 5", conn, params=(uid,))
             if not sales_hist.empty:
                 s_opts = [f"ID: {r['id']} | {r['product']} ({r['quantity']})" for _, r in sales_hist.iterrows()]
                 to_del_s = st.selectbox("Select Sale to Delete", s_opts)
@@ -236,7 +250,7 @@ else:
                     st.rerun()
 
         with c_del2:
-            inv_hist = pd.read_sql(f"SELECT * FROM inventory WHERE user_id = {uid}", conn)
+            inv_hist = pd.read_sql("SELECT * FROM inventory WHERE user_id = ?", conn, params=(uid,))
             if not inv_hist.empty:
                 i_opts = inv_hist['product'].tolist()
                 to_del_i = st.selectbox("Select Product to Wipe", i_opts)
@@ -246,7 +260,7 @@ else:
 
         st.markdown("---")
         st.subheader("Inventory Status")
-        st.dataframe(pd.read_sql(f"SELECT product, current_stock FROM inventory WHERE user_id = {uid}", conn), use_container_width=True)
+        st.dataframe(pd.read_sql("SELECT product, current_stock FROM inventory WHERE user_id = ?", conn, params=(uid,)), use_container_width=True)
         st.subheader("Full Sales History")
-        st.dataframe(pd.read_sql(f"SELECT id, product, date, quantity FROM sales WHERE user_id = {uid} ORDER BY id DESC", conn), use_container_width=True)
+        st.dataframe(pd.read_sql("SELECT id, product, date, quantity FROM sales WHERE user_id = ? ORDER BY id DESC", conn, params=(uid,)), use_container_width=True)
         conn.close()

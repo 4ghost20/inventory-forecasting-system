@@ -61,8 +61,8 @@ def run_forecast(series, steps=7):
     """Runs the ARIMA(1,1,1) model with error handling."""
     try:
         # Check if we have enough data points
-        if len(series) < 3:
-            warning = f"Low data points ({len(series)} days). Using simple average."
+        if len(series) < 7:
+            warning = f"Insufficient data points ({len(series)} days). Need at least 7 days for reliable forecast. Using simple average."
             logging.warning(warning)
             return pd.Series([series.mean()] * steps), warning
         
@@ -91,14 +91,23 @@ def run_inventory_check(user_id):
     
     #user-specific output path
     output_path = os.path.join(BASE_DIR, 'data', f'forecast_user_{user_id}.csv')
-    metrics_path = os.path.join(BASE_DIR, 'data', f'forecast_metrics_user_{user_id}.txt')
+    metrics_path = os.path.join(BASE_DIR, 'data', f'forecast_metrics_user_{user_id}.csv')
+    
+    # Check if recent forecast exists (cache for 1 hour)
+    if os.path.exists(output_path):
+        file_time = os.path.getmtime(output_path)
+        current_time = pd.Timestamp.now().timestamp()
+        if current_time - file_time < 3600:  # 1 hour
+            print(f"Using cached forecast for user {user_id}")
+            logging.info(f"Using cached forecast for user {user_id}")
+            return True
     
     conn = sqlite3.connect(DB_PATH)
     
     try:
         # CRITICAL: Filter by user_id so users don't see each other's trends
-        query = f"SELECT product, date, quantity FROM sales WHERE user_id = {user_id}"
-        sales_df = pd.read_sql(query, conn)
+        query = "SELECT product, date, quantity FROM sales WHERE user_id = ?"
+        sales_df = pd.read_sql(query, conn, params=(user_id,))
         
         if sales_df.empty:
             print(f"No sales data found for user {user_id}")

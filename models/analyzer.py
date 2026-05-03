@@ -34,7 +34,6 @@ def run_gap_analysis(user_id):
     project_root = os.path.dirname(script_dir)
     # Use user-specific forecast file
     forecast_path = os.path.join(project_root, 'data', f'forecast_user_{user_id}.csv')
-    stock_path = os.path.join(project_root, 'data', 'current_inventory.csv')
 
     # Check if forecast file exists
     if not os.path.exists(forecast_path):
@@ -43,7 +42,12 @@ def run_gap_analysis(user_id):
 
     # 2. Load the Data
     forecast_df = pd.read_csv(forecast_path)
-    stock_df = pd.read_csv(stock_path)
+    
+    # Load inventory from database instead of CSV
+    import sqlite3
+    conn = sqlite3.connect(os.path.join(project_root, 'inventory_system.db'))
+    stock_df = pd.read_sql("SELECT product, current_stock, reorder_point FROM inventory WHERE user_id = ?", conn, params=(user_id,))
+    conn.close()
 
     # 3. Aggregate Forecast
     total_forecast = forecast_df.groupby('product')['predicted_quantity'].sum().reset_index()

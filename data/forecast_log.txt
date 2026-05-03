@@ -13,3 +13,8 @@
 2026-05-03 08:12:03,587 - Data stationarity: Warning (non-stationary)
 2026-05-03 08:12:03,703 - Data stationarity: OK (stationary)
 2026-05-03 08:12:03,933 - Forecast successfully saved for user 1
+2026-05-03 11:24:28,171 - Forecast started for user 1
+2026-05-03 11:24:28,228 - Data stationarity: Warning (non-stationary)
+2026-05-03 11:24:28,323 - Data stationarity: Warning (non-stationary)
+2026-05-03 11:24:28,413 - Data stationarity: OK (stationary)
+2026-05-03 11:24:28,523 - Forecast successfully saved for user 1

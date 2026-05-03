@@ -1,7 +1,5 @@
 pandas
 numpy
-matplotlib
 statsmodels
 streamlit
-scikit-learn
 passlib

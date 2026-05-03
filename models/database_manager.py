@@ -29,7 +29,7 @@ def register_user(username, password):
         conn = sqlite3.connect('inventory_system.db')
         c = conn.cursor()
         
-        # Hash the password before saving (Security Best Practice)
+        # Hash the password before saving 
         hashed_password = pbkdf2_sha256.hash(password)
         
         c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
@@ -57,7 +57,7 @@ def add_sales_record(user_id, product, date, quantity):
     conn = sqlite3.connect('inventory_system.db')
     c = conn.cursor()
     try:
-        # Validate that date is not in the future
+        # Validate if date is not in the future
         sale_date = pd.to_datetime(date)
         today = pd.Timestamp.today()
         if sale_date > today:
@@ -122,8 +122,8 @@ def migrate_csv_to_sql(user_id):
     """One-time migration of legacy CSV data into the user's SQL account."""
     conn = sqlite3.connect('inventory_system.db')
     # Check if user already has data to prevent duplicates
-    inv_count = pd.read_sql(f"SELECT COUNT(*) as count FROM inventory WHERE user_id = {user_id}", conn)['count'][0]
-    sales_count = pd.read_sql(f"SELECT COUNT(*) as count FROM sales WHERE user_id = {user_id}", conn)['count'][0]
+    inv_count = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE user_id = ?", conn, params=(user_id,))['count'][0]
+    sales_count = pd.read_sql("SELECT COUNT(*) as count FROM sales WHERE user_id = ?", conn, params=(user_id,))['count'][0]
     
     # Only migrate if no data exists for this user (prevents duplicates)
     if inv_count == 0 and sales_count == 0:
