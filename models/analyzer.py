@@ -25,14 +25,21 @@ def export_action_plan(analysis_df):
             
     print(f"Action plan exported to: {report_path}")
 
-def run_gap_analysis():
-    print("!!! STARTING INVENTORY ANALYSIS !!!")
+def run_gap_analysis(user_id):
+    """Analyze inventory gaps using user-specific forecast data."""
+    print(f"!!! ANALYZING INVENTORY FOR USER {user_id} !!!")
     
     # 1. Setup Paths
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    forecast_path = os.path.join(project_root, 'data', 'forecast_results.csv')
+    # Use user-specific forecast file
+    forecast_path = os.path.join(project_root, 'data', f'forecast_user_{user_id}.csv')
     stock_path = os.path.join(project_root, 'data', 'current_inventory.csv')
+
+    # Check if forecast file exists
+    if not os.path.exists(forecast_path):
+        print(f"No forecast found for user {user_id}. Run forecast first.")
+        return False
 
     # 2. Load the Data
     forecast_df = pd.read_csv(forecast_path)
@@ -43,7 +50,7 @@ def run_gap_analysis():
     total_forecast.columns = ['product', 'total_7day_demand']
 
     # 4. Merge Stock and Forecast
-    analysis = pd.merge(stock_df, total_forecast, on='product')
+    analysis = pd.merge(stock_df, total_forecast, on='product', how='outer')
 
     # 5. Calculate the Gap
     analysis['remaining_after_week'] = analysis['current_stock'] - analysis['total_7day_demand']
@@ -51,11 +58,11 @@ def run_gap_analysis():
     # 6. Flag Alerts
     print("\n--- INVENTORY STATUS REPORT ---")
     for index, row in analysis.iterrows():
-        status = "✅ OK"
+        status = " OK"
         if row['remaining_after_week'] < 0:
-            status = "🚨 CRITICAL: STOCKOUT RISK"
+            status = " CRITICAL: STOCKOUT RISK"
         elif row['remaining_after_week'] < row['reorder_point']:
-            status = "⚠️ WARNING: REORDER SOON"
+            status = "WARNING: REORDER SOON"
             
         print(f"Product: {row['product']}")
         print(f"  Current Stock: {row['current_stock']}")
@@ -63,8 +70,9 @@ def run_gap_analysis():
         print(f"  Status: {status}")
         print("-" * 30)
     
-    # 7. NEW: Trigger the text report
+    # Trigger the text report
     export_action_plan(analysis)
+    return True
 
 if __name__ == "__main__":
-    run_gap_analysis()
+    run_gap_analysis(1)

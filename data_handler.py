@@ -16,7 +16,6 @@ print("\n--- Sorted Dataset ---")
 print(df)
 
 # 4. Group by product
-# This is a Day 3 requirement to see totals per item
 grouped = df.groupby('product')['quantity'].sum()
 
 print("\n--- Total Quantity per Product ---")

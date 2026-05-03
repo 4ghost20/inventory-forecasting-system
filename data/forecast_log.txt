@@ -1,0 +1,5 @@
+2026-05-03 08:04:32,051 - Forecast started for user 1
+2026-05-03 08:04:32,086 - Data stationarity: Warning (non-stationary)
+2026-05-03 08:04:32,192 - Data stationarity: Warning (non-stationary)
+2026-05-03 08:04:32,293 - Data stationarity: OK (stationary)
+2026-05-03 08:04:32,521 - Forecast successfully saved for user 1

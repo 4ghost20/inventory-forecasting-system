@@ -1,0 +1,4 @@
+product,data_points,forecast_status,accuracy
+Widget_A,7,Success,58.4%
+Gadget_B,7,Success,50.1%
+apple,31,Success,100.0%
