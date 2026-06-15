@@ -11,6 +11,13 @@ from models.database_manager import (
 from models.forecaster import run_inventory_check
 from models.analyzer import run_gap_analysis
 
+def clear_user_forecast_cache(user_id):
+    """Remove saved forecast outputs after data changes."""
+    for filename in [f'forecast_user_{user_id}.csv', f'forecast_metrics_user_{user_id}.csv']:
+        path = os.path.join('data', filename)
+        if os.path.exists(path):
+            os.remove(path)
+
 # 1. Setup
 st.set_page_config(page_title="Inventory AI", layout="wide", page_icon=":material/inventory_2:")
 init_db()
@@ -89,7 +96,7 @@ else:
     st.sidebar.title(username)
     if st.sidebar.button("Run My Forecast", icon=":material/rocket_launch:"):
         with st.spinner("Analyzing history..."):
-            if run_inventory_check(uid):
+            if run_inventory_check(uid, force_refresh=True):
                 st.sidebar.success("Forecast updated.")
                 st.rerun()
             else:
@@ -165,8 +172,12 @@ else:
 
                             e1, e2, e3 = st.columns(3)
                             e1.metric("MAE", metric_row.get('mae', 'N/A'))
-                            e2.metric("RMSE", metric_row.get('rmse', 'N/A'))
-                            e3.metric("MASE", metric_row.get('mase', 'N/A'))
+                            e2.metric("MSE", metric_row.get('mse', 'N/A'))
+                            e3.metric("RMSE", metric_row.get('rmse', 'N/A'))
+
+                            e4, e5 = st.columns(2)
+                            e4.metric("MAPE", metric_row.get('mape', 'N/A'))
+                            e5.metric("MASE", metric_row.get('mase', 'N/A'))
 
                             st.caption("MASE below 1.00 means the ARIMA forecast beat a naive forecast that simply repeats the last observed demand.")
                 else:
@@ -199,7 +210,7 @@ else:
                         st.error("Product name too long (max 100 characters).")
                     elif qs <= 0:
                         st.error("Quantity must be greater than 0.")
-                    elif ds > pd.Timestamp.today():
+                    elif ds > pd.Timestamp.today().date():
                         st.error("Sale date cannot be in the future.")
                     else:
                         conn = sqlite3.connect('inventory_system.db')
@@ -208,17 +219,18 @@ else:
                         if not check.empty and check.iloc[0]['current_stock'] >= qs:
                             result = add_sales_record(uid, ps, ds, qs)
                             if result:
+                                clear_user_forecast_cache(uid)
                                 st.success("Sale logged and stock updated.")
                                 st.rerun()
                             else:
-                                st.error("Sale date cannot be in the future.")
+                                st.error("Sale could not be logged. Check product stock and sale date.")
                         else:
                             st.error("Not enough stock or product not found.")
 
         with col_r:
             st.subheader("Restock")
             conn = sqlite3.connect('inventory_system.db')
-            prods = pd.read_sql(f"SELECT product FROM inventory WHERE user_id = {uid}", conn)['product'].tolist()
+            prods = pd.read_sql("SELECT product FROM inventory WHERE user_id = ?", conn, params=(uid,))['product'].tolist()
             conn.close()
             with st.form("r_form"):
                 pr = st.selectbox("Product", prods if prods else ["None"])
@@ -230,6 +242,7 @@ else:
                         st.error("Quantity must be greater than 0.")
                     else:
                         update_stock_level(uid, pr, qr)
+                        clear_user_forecast_cache(uid)
                         st.success(f"Added {qr} units to {pr}.")
                         st.rerun()
 
@@ -250,9 +263,12 @@ else:
                     elif rp <= 0:
                         st.error("Reorder point must be greater than 0.")
                     else:
-                        add_new_inventory_item(uid, pn, sn, rp)
-                        st.success(f"{pn} registered with reorder point at {rp} units.")
-                        st.rerun()
+                        if add_new_inventory_item(uid, pn, sn, rp):
+                            clear_user_forecast_cache(uid)
+                            st.success(f"{pn} registered with reorder point at {rp} units.")
+                            st.rerun()
+                        else:
+                            st.error("Product already exists. Use Restock to add more units.")
 
     # --- DATABASE VIEW ---
     elif page == "Database View":
@@ -269,7 +285,8 @@ else:
                 to_del_s = st.selectbox("Select Sale to Delete", s_opts)
                 if st.button("Delete Sale Entry", icon=":material/delete:"):
                     t_id = int(to_del_s.split("ID: ")[1].split(" |")[0])
-                    delete_transaction('sales', t_id, uid)
+                    if delete_transaction('sales', t_id, uid):
+                        clear_user_forecast_cache(uid)
                     st.rerun()
 
         with c_del2:
@@ -279,6 +296,7 @@ else:
                 to_del_i = st.selectbox("Select Product to Wipe", i_opts)
                 if st.button("Purge Product & History", icon=":material/delete_forever:"):
                     delete_product_fully(uid, to_del_i)
+                    clear_user_forecast_cache(uid)
                     st.rerun()
 
         st.markdown("---")

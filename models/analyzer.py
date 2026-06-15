@@ -1,11 +1,11 @@
 import pandas as pd
 import os
 
-def export_action_plan(analysis_df):
+def export_action_plan(analysis_df, user_id):
     """Generates a text file list of exactly what needs to be bought."""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    report_path = os.path.join(project_root, 'data', 'purchase_order_suggestions.txt')
+    report_path = os.path.join(project_root, 'data', f'purchase_order_suggestions_user_{user_id}.txt')
     
     with open(report_path, 'w') as f:
         f.write("=== WEEKLY PURCHASE ORDER SUGGESTIONS ===\n")
@@ -55,6 +55,9 @@ def run_gap_analysis(user_id):
 
     # 4. Merge Stock and Forecast
     analysis = pd.merge(stock_df, total_forecast, on='product', how='outer')
+    analysis['current_stock'] = analysis['current_stock'].fillna(0)
+    analysis['reorder_point'] = analysis['reorder_point'].fillna(0)
+    analysis['total_7day_demand'] = analysis['total_7day_demand'].fillna(0)
 
     # 5. Calculate the Gap
     analysis['remaining_after_week'] = analysis['current_stock'] - analysis['total_7day_demand']
@@ -75,7 +78,7 @@ def run_gap_analysis(user_id):
         print("-" * 30)
     
     # Trigger the text report
-    export_action_plan(analysis)
+    export_action_plan(analysis, user_id)
     return True
 
 if __name__ == "__main__":

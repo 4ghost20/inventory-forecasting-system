@@ -1,4 +1,4 @@
-product,data_points,forecast_status,accuracy,mae,rmse,mase
-Widget_A,7,Success,N/A,N/A,N/A,N/A
-Gadget_B,7,Success,N/A,N/A,N/A,N/A
-apple,31,Success,100.0%,0.45,0.48,0.04
+product,data_points,forecast_status,accuracy,mae,mse,rmse,mape,mase
+Widget_A,7,Success,N/A,N/A,N/A,N/A,N/A,N/A
+Gadget_B,7,Success,N/A,N/A,N/A,N/A,N/A,N/A
+apple,31,Success,N/A,0.45,0.23,0.48,N/A,0.04

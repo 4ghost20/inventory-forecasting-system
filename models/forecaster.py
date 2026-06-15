@@ -54,7 +54,7 @@ def calculate_mape(actual, predicted):
     predicted = np.array(predicted)
     non_zero = actual != 0
     if non_zero.sum() == 0:
-        return 0
+        return None
     return np.mean(np.abs((actual[non_zero] - predicted[non_zero]) / actual[non_zero])) * 100
 
 def calculate_mae(actual, predicted):
@@ -68,6 +68,12 @@ def calculate_rmse(actual, predicted):
     actual = np.array(actual)
     predicted = np.array(predicted)
     return np.sqrt(np.mean((actual - predicted) ** 2))
+
+def calculate_mse(actual, predicted):
+    """Calculate Mean Squared Error."""
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    return np.mean((actual - predicted) ** 2)
 
 def calculate_mase(actual, predicted, training_series):
     """Calculate Mean Absolute Scaled Error against a naive one-step forecast."""
@@ -89,6 +95,7 @@ def evaluate_forecast(series):
         return {
             'mape': None,
             'mae': None,
+            'mse': None,
             'rmse': None,
             'mase': None
         }
@@ -104,6 +111,7 @@ def evaluate_forecast(series):
     return {
         'mape': calculate_mape(actual, predicted),
         'mae': calculate_mae(actual, predicted),
+        'mse': calculate_mse(actual, predicted),
         'rmse': calculate_rmse(actual, predicted),
         'mase': calculate_mase(actual, predicted, train)
     }
@@ -141,7 +149,7 @@ def run_forecast(series, steps=7):
         logging.error(warning)
         return pd.Series([series.mean()] * steps), warning
 
-def run_inventory_check(user_id):
+def run_inventory_check(user_id, force_refresh=False):
     """The Main Engine: Pulls user-specific SQL data and saves a private forecast."""
     print(f"!!! ENGINE STARTING: USER {user_id} MODE !!!")
     logging.info(f"Forecast started for user {user_id}")
@@ -151,14 +159,14 @@ def run_inventory_check(user_id):
     metrics_path = os.path.join(BASE_DIR, 'data', f'forecast_metrics_user_{user_id}.csv')
     
     # Check if recent forecast exists (cache for 1 hour)
-    if os.path.exists(output_path):
+    if os.path.exists(output_path) and not force_refresh:
         file_time = os.path.getmtime(output_path)
         current_time = pd.Timestamp.now().timestamp()
         metrics_are_current = False
         if os.path.exists(metrics_path):
             try:
                 existing_metrics = pd.read_csv(metrics_path, nrows=1)
-                metrics_are_current = 'mase' in existing_metrics.columns
+                metrics_are_current = {'mae', 'mse', 'rmse', 'mape'}.issubset(existing_metrics.columns)
             except Exception:
                 metrics_are_current = False
 
@@ -206,15 +214,17 @@ def run_inventory_check(user_id):
                 'forecast_status': status,
                 'accuracy': accuracy,
                 'mae': format_metric(evaluation['mae']),
+                'mse': format_metric(evaluation['mse']),
                 'rmse': format_metric(evaluation['rmse']),
+                'mape': format_metric(evaluation['mape']),
                 'mase': format_metric(evaluation['mase'])
             })
             
-            # Determine starting date for forecast labels
-            last_date = ts_data.index[-1]
+            # Forecast labels should represent the upcoming days from today.
+            start_date = max(ts_data.index[-1].date(), pd.Timestamp.today().date())
             
             for i, value in enumerate(predictions, start=1):
-                forecast_date = last_date + pd.Timedelta(days=i)
+                forecast_date = pd.Timestamp(start_date) + pd.Timedelta(days=i)
                 export_rows.append({
                     'product': product,
                     'forecast_date': forecast_date.date(),
@@ -229,7 +239,9 @@ def run_inventory_check(user_id):
                 'forecast_status': 'Failed',
                 'accuracy': 'N/A',
                 'mae': 'N/A',
+                'mse': 'N/A',
                 'rmse': 'N/A',
+                'mape': 'N/A',
                 'mase': 'N/A'
             })
             continue  # Skip this product
