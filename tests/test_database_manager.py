@@ -6,9 +6,12 @@ import sqlite3
 import tempfile
 import unittest
 
+import pandas as pd
+
 from models.database_manager import (
     add_new_inventory_item,
     add_sales_record,
+    bulk_import_sales,
     delete_transaction,
     init_db,
 )
@@ -60,6 +63,31 @@ class DatabaseManagerTests(unittest.TestCase):
 
         self.assertTrue(delete_transaction("sales", sale_id, self.user_id))
         self.assertEqual(self.read_stock("Widget"), 10)
+
+    def test_bulk_import_sales_creates_inventory_and_skips_bad_rows(self):
+        import_df = pd.DataFrame([
+            {
+                "date": dt.date.today().isoformat(),
+                "product": "Widget",
+                "quantity": 4,
+                "current_stock": 20,
+                "reorder_point": 5,
+            },
+            {
+                "date": dt.date.today().isoformat(),
+                "product": "Broken",
+                "quantity": 0,
+                "current_stock": 5,
+                "reorder_point": 2,
+            },
+        ])
+
+        result = bulk_import_sales(self.user_id, import_df)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(self.read_stock("Widget"), 20)
 
 
 if __name__ == "__main__":

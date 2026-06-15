@@ -6,7 +6,7 @@ from models.database_manager import (
     init_db, register_user, verify_user, add_sales_record, 
     update_stock_level, add_new_inventory_item, delete_transaction, 
     migrate_csv_to_sql, delete_product_fully, create_user_session,
-    get_user_by_session, delete_user_session
+    get_user_by_session, delete_user_session, bulk_import_sales
 )
 from models.forecaster import run_inventory_check
 from models.analyzer import run_gap_analysis
@@ -17,6 +17,32 @@ def clear_user_forecast_cache(user_id):
         path = os.path.join('data', filename)
         if os.path.exists(path):
             os.remove(path)
+
+def standardize_import_columns(df):
+    """Normalize common spreadsheet column names to the app's expected names."""
+    aliases = {
+        'sale_date': 'date',
+        'date_of_sale': 'date',
+        'item': 'product',
+        'item_name': 'product',
+        'product_name': 'product',
+        'qty': 'quantity',
+        'qty_sold': 'quantity',
+        'quantity_sold': 'quantity',
+        'units_sold': 'quantity',
+        'stock': 'current_stock',
+        'opening_stock': 'current_stock',
+        'available_stock': 'current_stock',
+        'reorder': 'reorder_point',
+        'minimum_stock': 'reorder_point'
+    }
+    normalized = df.copy()
+    normalized.columns = [
+        str(col).strip().lower().replace(' ', '_').replace('-', '_')
+        for col in normalized.columns
+    ]
+    normalized.rename(columns=aliases, inplace=True)
+    return normalized
 
 # 1. Setup
 st.set_page_config(page_title="Inventory AI", layout="wide", page_icon=":material/inventory_2:")
@@ -195,6 +221,48 @@ else:
     # --- ADD DATA ---
     elif page == "Add Data":
         st.title("Data Portal")
+
+        st.subheader("Bulk Import Sales Data")
+        uploaded_file = st.file_uploader(
+            "Upload CSV or Excel file",
+            type=["csv", "xlsx", "xls"],
+            help="Required columns: date, product, quantity. Optional columns: current_stock, reorder_point."
+        )
+
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.lower().endswith(".csv"):
+                    import_df = pd.read_csv(uploaded_file)
+                else:
+                    import_df = pd.read_excel(uploaded_file)
+
+                import_df = standardize_import_columns(import_df)
+                required = {'date', 'product', 'quantity'}
+                missing = sorted(required - set(import_df.columns))
+
+                if missing:
+                    st.error(f"Missing required columns: {', '.join(missing)}")
+                    st.caption("Use columns named date, product, quantity. Optional: current_stock, reorder_point.")
+                else:
+                    preview_cols = [col for col in ['date', 'product', 'quantity', 'current_stock', 'reorder_point'] if col in import_df.columns]
+                    st.dataframe(import_df[preview_cols].head(20), use_container_width=True)
+                    st.caption(f"Previewing first 20 rows from {len(import_df)} total rows.")
+
+                    if st.button("Import File", icon=":material/upload_file:"):
+                        result = bulk_import_sales(uid, import_df)
+                        if result['success']:
+                            clear_user_forecast_cache(uid)
+                            st.success(f"Imported {result['imported']} sales rows. Skipped {result['skipped']} rows.")
+                            if result['errors']:
+                                st.warning("Some rows were skipped: " + " | ".join(result['errors']))
+                        else:
+                            st.error("Import failed. " + " | ".join(result['errors']))
+            except ImportError:
+                st.error("Excel support needs the openpyxl package. Run: pip install openpyxl")
+            except Exception as e:
+                st.error(f"Could not read file: {e}")
+
+        st.markdown("---")
         col_s, col_r, col_n = st.columns(3)
         
         with col_s:
