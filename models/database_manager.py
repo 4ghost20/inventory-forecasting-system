@@ -1,6 +1,8 @@
 import sqlite3
 import pandas as pd
 import os
+import hashlib
+import secrets
 from passlib.hash import pbkdf2_sha256
 
 def init_db():
@@ -10,6 +12,10 @@ def init_db():
     # User table with hashed password storage
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS user_sessions
+                 (token_hash TEXT PRIMARY KEY, user_id INTEGER, created_at TEXT,
+                  FOREIGN KEY(user_id) REFERENCES users(id))''')
     
     # Inventory tracking
     c.execute('''CREATE TABLE IF NOT EXISTS inventory 
@@ -51,6 +57,55 @@ def verify_user(username, password):
     if user and pbkdf2_sha256.verify(password, user[1]):
         return user[0]  # Returns the user_id
     return None
+
+def create_user_session(user_id):
+    """Creates a reload-safe login session token for the browser."""
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    conn = sqlite3.connect('inventory_system.db')
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO user_sessions (token_hash, user_id, created_at) VALUES (?, ?, datetime('now'))",
+        (token_hash, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def get_user_by_session(token):
+    """Returns user details for a valid session token."""
+    if not token:
+        return None
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = sqlite3.connect('inventory_system.db')
+    c = conn.cursor()
+    c.execute(
+        '''SELECT users.id, users.username
+           FROM user_sessions
+           JOIN users ON users.id = user_sessions.user_id
+           WHERE user_sessions.token_hash = ?''',
+        (token_hash,)
+    )
+    user = c.fetchone()
+    conn.close()
+
+    if user:
+        return {'user_id': user[0], 'username': user[1]}
+    return None
+
+def delete_user_session(token):
+    """Revokes a stored browser session token."""
+    if not token:
+        return
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    conn = sqlite3.connect('inventory_system.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM user_sessions WHERE token_hash = ?", (token_hash,))
+    conn.commit()
+    conn.close()
 
 def add_sales_record(user_id, product, date, quantity):
     """Transactional update: Logs sale and deducts inventory in one go."""

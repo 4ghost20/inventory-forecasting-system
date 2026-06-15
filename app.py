@@ -5,21 +5,32 @@ import os
 from models.database_manager import (
     init_db, register_user, verify_user, add_sales_record, 
     update_stock_level, add_new_inventory_item, delete_transaction, 
-    migrate_csv_to_sql, delete_product_fully
+    migrate_csv_to_sql, delete_product_fully, create_user_session,
+    get_user_by_session, delete_user_session
 )
 from models.forecaster import run_inventory_check
 from models.analyzer import run_gap_analysis
 
 # 1. Setup
-st.set_page_config(page_title="Inventory AI", layout="wide", page_icon="📦")
+st.set_page_config(page_title="Inventory AI", layout="wide", page_icon=":material/inventory_2:")
 init_db()
 
 if 'logged_in' not in st.session_state:
     st.session_state.update({'logged_in': False, 'user_id': None, 'username': None, 'auth_mode': 'login'})
 
+if not st.session_state['logged_in']:
+    session_token = st.query_params.get("session")
+    saved_session = get_user_by_session(session_token)
+    if saved_session:
+        st.session_state.update({
+            'logged_in': True,
+            'user_id': saved_session['user_id'],
+            'username': saved_session['username']
+        })
+
 # --- PHASE 1: AUTHENTICATION GATE ---
 if not st.session_state['logged_in']:
-    st.title("🔐 Inventory AI: Secure Portal")
+    st.title("Inventory AI: Secure Portal")
     col_a, col_b, col_c = st.columns([1, 2, 1])
     
     with col_b:
@@ -28,19 +39,20 @@ if not st.session_state['logged_in']:
             with st.form("login_form"):
                 u = st.text_input("Username")
                 p = st.text_input("Password", type="password")
-                if st.form_submit_button("Sign In"):
+                if st.form_submit_button("Sign In", icon=":material/login:"):
                     if not u or not p:
                         st.error("Please enter credentials.")
                     else:
                         uid = verify_user(u, p)
                         if uid:
                             st.session_state.update({'logged_in': True, 'user_id': uid, 'username': u})
+                            st.query_params["session"] = create_user_session(uid)
                             migrate_csv_to_sql(uid)
                             st.rerun()
                         else:
                             st.error("Invalid username or password.")
             
-            if st.button("No account? Register here"):
+            if st.button("No account? Register here", icon=":material/person_add:"):
                 st.session_state['auth_mode'] = 'register'
                 st.rerun()
 
@@ -50,7 +62,7 @@ if not st.session_state['logged_in']:
                 nu = st.text_input("New Username")
                 np = st.text_input("New Password", type="password")
                 cp = st.text_input("Confirm Password", type="password")
-                if st.form_submit_button("Register"):
+                if st.form_submit_button("Register", icon=":material/person_add:"):
                     if np != cp:
                         st.error("Passwords do not match.")
                     elif len(nu) < 3 or len(np) < 6:
@@ -62,7 +74,7 @@ if not st.session_state['logged_in']:
                     else:
                         st.error("Username already taken.")
             
-            if st.button("Back to Login"):
+            if st.button("Back to Login", icon=":material/arrow_back:"):
                 st.session_state['auth_mode'] = 'login'
                 st.rerun()
     st.stop()
@@ -74,23 +86,25 @@ else:
     user_forecast_path = os.path.join('data', f'forecast_user_{uid}.csv')
 
     # SIDEBAR
-    st.sidebar.title(f"👤 {username}")
-    if st.sidebar.button("🚀 Run My Forecast"):
+    st.sidebar.title(username)
+    if st.sidebar.button("Run My Forecast", icon=":material/rocket_launch:"):
         with st.spinner("Analyzing history..."):
             if run_inventory_check(uid):
-                st.sidebar.success("✅ Forecast Updated!")
+                st.sidebar.success("Forecast updated.")
                 st.rerun()
             else:
-                st.sidebar.error("❌ Not enough sales data. Need at least 3 days of history.")
+                st.sidebar.error("Not enough sales data. Need at least 3 days of history.")
     
-    if st.sidebar.button("📊 Analyze Stock Gaps"):
+    if st.sidebar.button("Analyze Stock Gaps", icon=":material/query_stats:"):
         with st.spinner("Running gap analysis..."):
             if run_gap_analysis(uid):
-                st.sidebar.success("✅ Analysis Complete!")
+                st.sidebar.success("Analysis complete.")
             else:
-                st.sidebar.error("❌ Run forecast first.")
+                st.sidebar.error("Run forecast first.")
     
-    if st.sidebar.button("Logout"):
+    if st.sidebar.button("Logout", icon=":material/logout:"):
+        delete_user_session(st.query_params.get("session"))
+        st.query_params.clear()
         st.session_state.update({'logged_in': False, 'user_id': None})
         st.rerun()
 
@@ -98,7 +112,7 @@ else:
 
     # --- DASHBOARD ---
     if page == "Dashboard":
-        st.title(f"📊 {username}'s Dashboard")
+        st.title(f"{username}'s Dashboard")
         conn = sqlite3.connect('inventory_system.db')
         inv_df = pd.read_sql("SELECT * FROM inventory WHERE user_id = ?", conn, params=(uid,))
         
@@ -123,16 +137,17 @@ else:
                         c3.success(f"Surplus: {gap}")
                     
                     st.line_chart(prod_f.set_index('forecast_date')['predicted_quantity'])
-                    st.subheader("📈 Detailed Forecast")
+                    st.subheader("Detailed Forecast")
                     st.dataframe(prod_f, use_container_width=True)
                     
                     # Download button for forecast
                     csv = prod_f.to_csv(index=False)
                     st.download_button(
-                        label="📥 Download Forecast as CSV",
+                        label="Download Forecast as CSV",
                         data=csv,
                         file_name=f"forecast_{sel_prod}_{pd.Timestamp.today().date()}.csv",
-                        mime="text/csv"
+                        mime="text/csv",
+                        icon=":material/download:"
                     )
                     
                     # Show forecast metrics if available
@@ -141,11 +156,19 @@ else:
                         metrics_df = pd.read_csv(metrics_path)
                         prod_metrics = metrics_df[metrics_df['product'] == sel_prod]
                         if not prod_metrics.empty:
-                            st.subheader("📊 Forecast Quality")
+                            st.subheader("Forecast Quality")
+                            metric_row = prod_metrics.iloc[0]
                             m1, m2, m3 = st.columns(3)
-                            m1.metric("Data Points", int(prod_metrics['data_points'].values[0]))
-                            m2.metric("Forecast Status", prod_metrics['forecast_status'].values[0])
-                            m3.metric("Accuracy", prod_metrics['accuracy'].values[0])
+                            m1.metric("Data Points", int(metric_row['data_points']))
+                            m2.metric("Forecast Status", metric_row['forecast_status'])
+                            m3.metric("Accuracy", metric_row['accuracy'])
+
+                            e1, e2, e3 = st.columns(3)
+                            e1.metric("MAE", metric_row.get('mae', 'N/A'))
+                            e2.metric("RMSE", metric_row.get('rmse', 'N/A'))
+                            e3.metric("MASE", metric_row.get('mase', 'N/A'))
+
+                            st.caption("MASE below 1.00 means the ARIMA forecast beat a naive forecast that simply repeats the last observed demand.")
                 else:
                     c2.metric("7-Day Forecast", "No data")
                     c3.metric("Stock Gap", "N/A")
@@ -153,31 +176,31 @@ else:
             else:
                 c2.metric("7-Day Forecast", "Not run")
                 c3.metric("Stock Gap", "N/A")
-                st.warning("🔄 Run forecast to see AI predictions.")
+                st.warning("Run forecast to see AI predictions.")
         else:
             st.info("Inventory is empty. Add items in 'Add Data'.")
         conn.close()
 
     # --- ADD DATA ---
     elif page == "Add Data":
-        st.title("📥 Data Portal")
+        st.title("Data Portal")
         col_s, col_r, col_n = st.columns(3)
         
         with col_s:
-            st.subheader("🛒 Log Sale")
+            st.subheader("Log Sale")
             with st.form("s_form"):
                 ps = st.text_input("Product Name").strip()
                 ds = st.date_input("Date of Sale")
                 qs = st.number_input("Qty Sold", min_value=1)
-                if st.form_submit_button("Submit Sale"):
+                if st.form_submit_button("Submit Sale", icon=":material/point_of_sale:"):
                     if not ps or len(ps.strip()) == 0:
-                        st.error("❌ Product name cannot be empty.")
+                        st.error("Product name cannot be empty.")
                     elif len(ps) > 100:
-                        st.error("❌ Product name too long (max 100 characters).")
+                        st.error("Product name too long (max 100 characters).")
                     elif qs <= 0:
-                        st.error("❌ Quantity must be greater than 0.")
+                        st.error("Quantity must be greater than 0.")
                     elif ds > pd.Timestamp.today():
-                        st.error("❌ Sale date cannot be in the future.")
+                        st.error("Sale date cannot be in the future.")
                     else:
                         conn = sqlite3.connect('inventory_system.db')
                         check = pd.read_sql("SELECT current_stock FROM inventory WHERE product=? AND user_id=?", conn, params=(ps, uid))
@@ -185,58 +208,58 @@ else:
                         if not check.empty and check.iloc[0]['current_stock'] >= qs:
                             result = add_sales_record(uid, ps, ds, qs)
                             if result:
-                                st.success("✅ Sale logged & stock updated!")
+                                st.success("Sale logged and stock updated.")
                                 st.rerun()
                             else:
-                                st.error("❌ Sale date cannot be in the future.")
+                                st.error("Sale date cannot be in the future.")
                         else:
-                            st.error("❌ Not enough stock or product not found.")
+                            st.error("Not enough stock or product not found.")
 
         with col_r:
-            st.subheader("📦 Restock")
+            st.subheader("Restock")
             conn = sqlite3.connect('inventory_system.db')
             prods = pd.read_sql(f"SELECT product FROM inventory WHERE user_id = {uid}", conn)['product'].tolist()
             conn.close()
             with st.form("r_form"):
                 pr = st.selectbox("Product", prods if prods else ["None"])
                 qr = st.number_input("Added Qty", min_value=1)
-                if st.form_submit_button("Update Stock"):
+                if st.form_submit_button("Update Stock", icon=":material/inventory:"):
                     if pr == "None":
-                        st.error("❌ No products available.")
+                        st.error("No products available.")
                     elif qr <= 0:
-                        st.error("❌ Quantity must be greater than 0.")
+                        st.error("Quantity must be greater than 0.")
                     else:
                         update_stock_level(uid, pr, qr)
-                        st.success(f"✅ Added {qr} units to {pr}.")
+                        st.success(f"Added {qr} units to {pr}.")
                         st.rerun()
 
         with col_n:
-            st.subheader("✨ New Item")
+            st.subheader("New Item")
             with st.form("n_form"):
                 pn = st.text_input("Product Name").strip()
                 sn = st.number_input("Opening Stock", min_value=0)
                 rp = st.number_input("Reorder Point", min_value=1, value=10, 
                                    help="Stock level that triggers reordering")
-                if st.form_submit_button("Register Product"):
+                if st.form_submit_button("Register Product", icon=":material/add_box:"):
                     if not pn or len(pn.strip()) == 0:
-                        st.error("❌ Product name cannot be empty.")
+                        st.error("Product name cannot be empty.")
                     elif len(pn) > 100:
-                        st.error("❌ Product name too long (max 100 characters).")
+                        st.error("Product name too long (max 100 characters).")
                     elif sn < 0:
-                        st.error("❌ Stock cannot be negative.")
+                        st.error("Stock cannot be negative.")
                     elif rp <= 0:
-                        st.error("❌ Reorder point must be greater than 0.")
+                        st.error("Reorder point must be greater than 0.")
                     else:
                         add_new_inventory_item(uid, pn, sn, rp)
-                        st.success(f"✅ {pn} registered with reorder point at {rp} units.")
+                        st.success(f"{pn} registered with reorder point at {rp} units.")
                         st.rerun()
 
     # --- DATABASE VIEW ---
     elif page == "Database View":
-        st.title("🗄️ Records")
+        st.title("Records")
         conn = sqlite3.connect('inventory_system.db')
         
-        st.subheader("🛠️ Management")
+        st.subheader("Management")
         c_del1, c_del2 = st.columns(2)
         
         with c_del1:
@@ -244,7 +267,7 @@ else:
             if not sales_hist.empty:
                 s_opts = [f"ID: {r['id']} | {r['product']} ({r['quantity']})" for _, r in sales_hist.iterrows()]
                 to_del_s = st.selectbox("Select Sale to Delete", s_opts)
-                if st.button("Delete Sale Entry"):
+                if st.button("Delete Sale Entry", icon=":material/delete:"):
                     t_id = int(to_del_s.split("ID: ")[1].split(" |")[0])
                     delete_transaction('sales', t_id, uid)
                     st.rerun()
@@ -254,7 +277,7 @@ else:
             if not inv_hist.empty:
                 i_opts = inv_hist['product'].tolist()
                 to_del_i = st.selectbox("Select Product to Wipe", i_opts)
-                if st.button("🚨 Purge Product & History"):
+                if st.button("Purge Product & History", icon=":material/delete_forever:"):
                     delete_product_fully(uid, to_del_i)
                     st.rerun()
 

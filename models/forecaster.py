@@ -57,6 +57,63 @@ def calculate_mape(actual, predicted):
         return 0
     return np.mean(np.abs((actual[non_zero] - predicted[non_zero]) / actual[non_zero])) * 100
 
+def calculate_mae(actual, predicted):
+    """Calculate Mean Absolute Error."""
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    return np.mean(np.abs(actual - predicted))
+
+def calculate_rmse(actual, predicted):
+    """Calculate Root Mean Square Error."""
+    actual = np.array(actual)
+    predicted = np.array(predicted)
+    return np.sqrt(np.mean((actual - predicted) ** 2))
+
+def calculate_mase(actual, predicted, training_series):
+    """Calculate Mean Absolute Scaled Error against a naive one-step forecast."""
+    training_series = pd.Series(training_series).dropna()
+    if len(training_series) < 2:
+        return None
+
+    naive_error = training_series.diff().abs().dropna().mean()
+    forecast_mae = calculate_mae(actual, predicted)
+
+    if naive_error == 0:
+        return 0 if forecast_mae == 0 else None
+
+    return forecast_mae / naive_error
+
+def evaluate_forecast(series):
+    """Backtest the model on a recent holdout window and return forecast metrics."""
+    if len(series) < 8:
+        return {
+            'mape': None,
+            'mae': None,
+            'rmse': None,
+            'mase': None
+        }
+
+    test_size = min(7, len(series) - 7)
+    train = series.iloc[:-test_size]
+    test = series.iloc[-test_size:]
+
+    predicted, _ = run_forecast(train, steps=test_size)
+    predicted = pd.Series(predicted).iloc[:test_size].values
+    actual = test.values
+
+    return {
+        'mape': calculate_mape(actual, predicted),
+        'mae': calculate_mae(actual, predicted),
+        'rmse': calculate_rmse(actual, predicted),
+        'mase': calculate_mase(actual, predicted, train)
+    }
+
+def format_metric(value, decimals=2):
+    """Format optional metric values for CSV display."""
+    if value is None or pd.isna(value):
+        return 'N/A'
+    return f"{value:.{decimals}f}"
+
 def run_forecast(series, steps=7):
     """Runs the ARIMA(1,1,1) model with error handling."""
     try:
@@ -97,7 +154,15 @@ def run_inventory_check(user_id):
     if os.path.exists(output_path):
         file_time = os.path.getmtime(output_path)
         current_time = pd.Timestamp.now().timestamp()
-        if current_time - file_time < 3600:  # 1 hour
+        metrics_are_current = False
+        if os.path.exists(metrics_path):
+            try:
+                existing_metrics = pd.read_csv(metrics_path, nrows=1)
+                metrics_are_current = 'mase' in existing_metrics.columns
+            except Exception:
+                metrics_are_current = False
+
+        if current_time - file_time < 3600 and metrics_are_current:  # 1 hour
             print(f"Using cached forecast for user {user_id}")
             logging.info(f"Using cached forecast for user {user_id}")
             return True
@@ -130,18 +195,19 @@ def run_inventory_check(user_id):
             ts_data = load_and_prep_data(sales_df, product)
             predictions, status = run_forecast(ts_data)
             
-            # Calculate accuracy metric
-            if len(ts_data) >= 7:
-                # Use last 7 points as test, rest as train
-                mape_score = calculate_mape(ts_data.tail(7).values, predictions[:7].values)
-            else:
-                mape_score = 0
+            # Calculate accuracy metrics with a recent holdout backtest.
+            evaluation = evaluate_forecast(ts_data)
+            mape_score = evaluation['mape']
+            accuracy = 'N/A' if mape_score is None else f"{max(0, 100 - mape_score):.1f}%"
             
             metrics_data.append({
                 'product': product,
                 'data_points': len(ts_data),
                 'forecast_status': status,
-                'accuracy': f"{100 - mape_score:.1f}%"
+                'accuracy': accuracy,
+                'mae': format_metric(evaluation['mae']),
+                'rmse': format_metric(evaluation['rmse']),
+                'mase': format_metric(evaluation['mase'])
             })
             
             # Determine starting date for forecast labels
@@ -161,7 +227,10 @@ def run_inventory_check(user_id):
                 'product': product,
                 'data_points': 0,
                 'forecast_status': 'Failed',
-                'accuracy': 'N/A'
+                'accuracy': 'N/A',
+                'mae': 'N/A',
+                'rmse': 'N/A',
+                'mase': 'N/A'
             })
             continue  # Skip this product
             
