@@ -1,17 +1,13 @@
 import pandas as pd
 import os
-import sqlite3
 import logging
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.stattools import adfuller
 import numpy as np
-
-# --- SETUP PATHS ---
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(BASE_DIR, 'inventory_system.db')
+from models.database_manager import connect_db, get_data_path
 
 # Setup logging to track forecast runs
-log_path = os.path.join(BASE_DIR, 'data', 'forecast_log.txt')
+log_path = get_data_path('forecast_log.txt')
 logging.basicConfig(filename=log_path, level=logging.INFO, 
                    format='%(asctime)s - %(message)s')
 
@@ -155,8 +151,8 @@ def run_inventory_check(user_id, force_refresh=False):
     logging.info(f"Forecast started for user {user_id}")
     
     #user-specific output path
-    output_path = os.path.join(BASE_DIR, 'data', f'forecast_user_{user_id}.csv')
-    metrics_path = os.path.join(BASE_DIR, 'data', f'forecast_metrics_user_{user_id}.csv')
+    output_path = get_data_path(f'forecast_user_{user_id}.csv')
+    metrics_path = get_data_path(f'forecast_metrics_user_{user_id}.csv')
     
     # Check if recent forecast exists (cache for 1 hour)
     if os.path.exists(output_path) and not force_refresh:
@@ -175,7 +171,7 @@ def run_inventory_check(user_id, force_refresh=False):
             logging.info(f"Using cached forecast for user {user_id}")
             return True
     
-    conn = sqlite3.connect(DB_PATH)
+    conn = connect_db()
     
     try:
         # CRITICAL: Filter by user_id so users don't see each other's trends

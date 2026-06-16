@@ -5,16 +5,96 @@ import hashlib
 import secrets
 from passlib.hash import pbkdf2_sha256
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+DEFAULT_DB_PATH = os.path.join(PROJECT_ROOT, 'inventory_system.db')
+SESSION_DAYS = 7
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def get_db_path():
+    """Return the active database path, with test/deploy override support."""
+    return os.environ.get('INVENTORY_DB_PATH', DEFAULT_DB_PATH)
+
+
+def get_data_path(filename):
+    """Return an absolute path inside the app data directory."""
+    return os.path.join(DATA_DIR, filename)
+
+
+def connect_db():
+    """Open a SQLite connection to the active app database."""
+    conn = sqlite3.connect(get_db_path(), timeout=30)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
+
+
+def column_exists(cursor, table_name, column_name):
+    """Check whether a column exists before running simple migrations."""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    return column_name in [row[1] for row in cursor.fetchall()]
+
+
+def ensure_auth_schema(cursor):
+    """Add small auth/admin columns to older databases."""
+    if not column_exists(cursor, 'users', 'is_admin'):
+        cursor.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0")
+    if not column_exists(cursor, 'users', 'must_change_password'):
+        cursor.execute("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+    if not column_exists(cursor, 'user_sessions', 'expires_at'):
+        cursor.execute("ALTER TABLE user_sessions ADD COLUMN expires_at TEXT")
+        cursor.execute(
+            '''UPDATE user_sessions
+               SET expires_at = datetime(created_at, ?)
+               WHERE expires_at IS NULL''',
+            (f'+{SESSION_DAYS} days',)
+        )
+
+
+def ensure_admin_exists(cursor):
+    """Promote the first user if the database has users but no admin."""
+    cursor.execute("SELECT COUNT(*) FROM users")
+    user_count = cursor.fetchone()[0]
+    if user_count == 0:
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
+    admin_count = cursor.fetchone()[0]
+    if admin_count == 0:
+        cursor.execute(
+            "UPDATE users SET is_admin = 1 WHERE id = (SELECT MIN(id) FROM users)"
+        )
+
+
+def cleanup_expired_sessions(days=SESSION_DAYS):
+    """Delete old browser sessions so login tokens do not last forever."""
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute(
+        '''DELETE FROM user_sessions
+           WHERE datetime(COALESCE(expires_at, created_at)) < datetime('now')
+              OR datetime(created_at) < datetime('now', ?)''',
+        (f'-{days} days',)
+    )
+    conn.commit()
+    conn.close()
+
 def init_db():
     """Initializes the database schema if tables do not exist."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     # User table with hashed password storage
     c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT)''')
+                 (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT,
+                  is_admin INTEGER DEFAULT 0,
+                  must_change_password INTEGER DEFAULT 0)''')
 
     c.execute('''CREATE TABLE IF NOT EXISTS user_sessions
                  (token_hash TEXT PRIMARY KEY, user_id INTEGER, created_at TEXT,
+                  expires_at TEXT,
                   FOREIGN KEY(user_id) REFERENCES users(id))''')
     
     # Inventory tracking
@@ -32,29 +112,40 @@ def init_db():
                      ON inventory(user_id, product)''')
     except sqlite3.IntegrityError:
         print("Warning: duplicate inventory products exist; unique index was not created.")
+    ensure_auth_schema(c)
+    ensure_admin_exists(c)
     conn.commit()
     conn.close()
+    cleanup_expired_sessions()
 
 def register_user(username, password):
     """Hashes password and saves new user if username is unique."""
+    conn = None
     try:
-        conn = sqlite3.connect('inventory_system.db')
+        conn = connect_db()
         c = conn.cursor()
         
         # Hash the password before saving 
         hashed_password = pbkdf2_sha256.hash(password)
         
-        c.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_password))
+        c.execute("SELECT COUNT(*) FROM users")
+        is_first_user = c.fetchone()[0] == 0
+
+        c.execute(
+            "INSERT INTO users (username, password, is_admin) VALUES (?, ?, ?)",
+            (username, hashed_password, 1 if is_first_user else 0)
+        )
         conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False  # Username already exists
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def verify_user(username, password):
     """Verifies credentials using secure hash comparison."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     c.execute("SELECT id, password FROM users WHERE username = ?", (username,))
     user = c.fetchone()
@@ -69,11 +160,12 @@ def create_user_session(user_id):
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     c.execute(
-        "INSERT INTO user_sessions (token_hash, user_id, created_at) VALUES (?, ?, datetime('now'))",
-        (token_hash, user_id)
+        '''INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
+           VALUES (?, ?, datetime('now'), datetime('now', ?))''',
+        (token_hash, user_id, f'+{SESSION_DAYS} days')
     )
     conn.commit()
     conn.close()
@@ -85,20 +177,30 @@ def get_user_by_session(token):
         return None
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     c.execute(
-        '''SELECT users.id, users.username
+        '''SELECT users.id, users.username, users.is_admin, users.must_change_password
            FROM user_sessions
            JOIN users ON users.id = user_sessions.user_id
-           WHERE user_sessions.token_hash = ?''',
-        (token_hash,)
+           WHERE user_sessions.token_hash = ?
+             AND datetime(COALESCE(user_sessions.expires_at, user_sessions.created_at)) >= datetime('now')
+             AND datetime(user_sessions.created_at) >= datetime('now', ?)''',
+        (token_hash, f'-{SESSION_DAYS} days')
     )
     user = c.fetchone()
+    if not user:
+        c.execute("DELETE FROM user_sessions WHERE token_hash = ?", (token_hash,))
+        conn.commit()
     conn.close()
 
     if user:
-        return {'user_id': user[0], 'username': user[1]}
+        return {
+            'user_id': user[0],
+            'username': user[1],
+            'is_admin': bool(user[2]),
+            'must_change_password': bool(user[3])
+        }
     return None
 
 def delete_user_session(token):
@@ -107,15 +209,148 @@ def delete_user_session(token):
         return
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     c.execute("DELETE FROM user_sessions WHERE token_hash = ?", (token_hash,))
     conn.commit()
     conn.close()
 
+
+def delete_user_sessions(user_id):
+    """Revoke all browser sessions for one user."""
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM user_sessions WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_user_profile(user_id):
+    """Return basic user flags for UI decisions."""
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute(
+        "SELECT id, username, is_admin, must_change_password FROM users WHERE id = ?",
+        (user_id,)
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        'user_id': row[0],
+        'username': row[1],
+        'is_admin': bool(row[2]),
+        'must_change_password': bool(row[3])
+    }
+
+
+def is_user_admin(user_id):
+    """Return True when the user has admin rights."""
+    profile = get_user_profile(user_id)
+    return bool(profile and profile['is_admin'])
+
+
+def list_users():
+    """List users for the admin management page."""
+    conn = connect_db()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        '''SELECT users.id, users.username, users.is_admin, users.must_change_password,
+                  COUNT(user_sessions.token_hash) AS active_sessions
+           FROM users
+           LEFT JOIN user_sessions
+             ON users.id = user_sessions.user_id
+            AND datetime(COALESCE(user_sessions.expires_at, user_sessions.created_at)) >= datetime('now')
+           GROUP BY users.id, users.username, users.is_admin, users.must_change_password
+           ORDER BY users.username'''
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def set_user_admin(admin_user_id, target_user_id, is_admin):
+    """Grant or remove admin rights. At least one admin must remain."""
+    if not is_user_admin(admin_user_id):
+        return False
+
+    conn = connect_db()
+    c = conn.cursor()
+    if not is_admin:
+        c.execute(
+            "SELECT COUNT(*) FROM users WHERE is_admin = 1 AND id != ?",
+            (target_user_id,)
+        )
+        if c.fetchone()[0] == 0:
+            conn.close()
+            return False
+
+    c.execute(
+        "UPDATE users SET is_admin = ? WHERE id = ?",
+        (1 if is_admin else 0, target_user_id)
+    )
+    conn.commit()
+    updated = c.rowcount > 0
+    conn.close()
+    return updated
+
+
+def reset_user_password(admin_user_id, target_user_id, new_password):
+    """Admin password reset for a user account."""
+    if not is_user_admin(admin_user_id) or len(new_password) < 6:
+        return False
+
+    hashed_password = pbkdf2_sha256.hash(new_password)
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute(
+        '''UPDATE users
+           SET password = ?, must_change_password = 1
+           WHERE id = ?''',
+        (hashed_password, target_user_id)
+    )
+    updated = c.rowcount > 0
+    if updated:
+        c.execute("DELETE FROM user_sessions WHERE user_id = ?", (target_user_id,))
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def change_user_password(user_id, current_password, new_password):
+    """Allow a logged-in user to change their own password."""
+    if len(new_password) < 6:
+        return False
+
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute("SELECT password FROM users WHERE id = ?", (user_id,))
+    row = c.fetchone()
+    if not row or not pbkdf2_sha256.verify(current_password, row[0]):
+        conn.close()
+        return False
+
+    hashed_password = pbkdf2_sha256.hash(new_password)
+    c.execute(
+        "UPDATE users SET password = ?, must_change_password = 0 WHERE id = ?",
+        (hashed_password, user_id)
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def clear_must_change_password(user_id):
+    """Clear the forced password change flag after a successful change."""
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET must_change_password = 0 WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
 def add_sales_record(user_id, product, date, quantity):
     """Transactional update: Logs sale and deducts inventory in one go."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     try:
         # Validate if date is not in the future
@@ -152,7 +387,7 @@ def add_sales_record(user_id, product, date, quantity):
 
 def update_stock_level(user_id, product_name, added_qty):
     """Adds stock to an existing product."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     c.execute('''UPDATE inventory SET current_stock = current_stock + ? 
                  WHERE product = ? AND user_id = ?''', (added_qty, product_name, user_id))
@@ -161,7 +396,7 @@ def update_stock_level(user_id, product_name, added_qty):
 
 def add_new_inventory_item(user_id, product_name, starting_stock, reorder_point):
     """Registers a brand new product for the user."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     try:
         c.execute(
@@ -182,7 +417,7 @@ def add_new_inventory_item(user_id, product_name, starting_stock, reorder_point)
 
 def upsert_inventory_item(user_id, product_name, current_stock=None, reorder_point=None):
     """Creates or updates an inventory item for imported data."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     try:
         c.execute(
@@ -239,7 +474,7 @@ def bulk_import_sales(user_id, import_df):
         missing = sorted(required_cols - set(import_df.columns))
         return {'success': False, 'imported': 0, 'skipped': len(import_df), 'errors': [f"Missing columns: {', '.join(missing)}"]}
 
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     imported = 0
     skipped = 0
@@ -273,6 +508,20 @@ def bulk_import_sales(user_id, import_df):
                     reorder_point = int(pd.to_numeric(row.get('reorder_point'), errors='raise'))
                     if reorder_point <= 0:
                         raise ValueError("reorder_point must be greater than 0")
+
+                normalized_date = sale_date.strftime('%Y-%m-%d')
+
+                c.execute(
+                    '''SELECT 1 FROM sales
+                       WHERE user_id = ? AND product = ? AND date = ? AND quantity = ?
+                       LIMIT 1''',
+                    (user_id, product, normalized_date, int(quantity))
+                )
+                if c.fetchone():
+                    skipped += 1
+                    if len(errors) < 5:
+                        errors.append(f"Row {line}: duplicate sale skipped")
+                    continue
 
                 c.execute(
                     "SELECT id FROM inventory WHERE user_id = ? AND product = ?",
@@ -314,7 +563,7 @@ def bulk_import_sales(user_id, import_df):
 
                 c.execute(
                     "INSERT INTO sales (user_id, product, date, quantity) VALUES (?, ?, ?, ?)",
-                    (user_id, product, sale_date.strftime('%Y-%m-%d'), int(quantity))
+                    (user_id, product, normalized_date, int(quantity))
                 )
                 imported += 1
             except Exception as e:
@@ -332,7 +581,7 @@ def bulk_import_sales(user_id, import_df):
 
 def delete_product_fully(user_id, product_name):
     """Removes a product and all associated sales history to clean up forecast data."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     c.execute("DELETE FROM inventory WHERE product = ? AND user_id = ?", (product_name, user_id))
     c.execute("DELETE FROM sales WHERE product = ? AND user_id = ?", (product_name, user_id))
@@ -344,7 +593,7 @@ def delete_transaction(table_name, record_id, user_id):
     if table_name != 'sales':
         return False
 
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     c = conn.cursor()
     try:
         c.execute(
@@ -372,9 +621,28 @@ def delete_transaction(table_name, record_id, user_id):
     finally:
         conn.close()
 
+
+def update_reorder_point(user_id, product_name, reorder_point):
+    """Updates the reorder point for one product."""
+    if reorder_point <= 0:
+        return False
+
+    conn = connect_db()
+    c = conn.cursor()
+    c.execute(
+        '''UPDATE inventory
+           SET reorder_point = ?
+           WHERE product = ? AND user_id = ?''',
+        (reorder_point, product_name, user_id)
+    )
+    conn.commit()
+    updated = c.rowcount > 0
+    conn.close()
+    return updated
+
 def migrate_csv_to_sql(user_id):
     """One-time migration of legacy CSV data into the user's SQL account."""
-    conn = sqlite3.connect('inventory_system.db')
+    conn = connect_db()
     # Check if user already has data to prevent duplicates
     inv_count = pd.read_sql("SELECT COUNT(*) as count FROM inventory WHERE user_id = ?", conn, params=(user_id,))['count'][0]
     sales_count = pd.read_sql("SELECT COUNT(*) as count FROM sales WHERE user_id = ?", conn, params=(user_id,))['count'][0]
@@ -382,16 +650,18 @@ def migrate_csv_to_sql(user_id):
     # Only migrate if no data exists for this user (prevents duplicates)
     if inv_count == 0 and sales_count == 0:
         # Load Inventory CSV
-        if os.path.exists('data/current_inventory.csv'):
-            inv_df = pd.read_csv('data/current_inventory.csv')
+        inventory_path = get_data_path('current_inventory.csv')
+        if os.path.exists(inventory_path):
+            inv_df = pd.read_csv(inventory_path)
             inv_df['user_id'] = user_id
             # Filter to ensure we only push relevant columns
             cols = ['user_id', 'product', 'current_stock', 'reorder_point']
             inv_df[cols].to_sql('inventory', conn, if_exists='append', index=False)
             
         # Load Sales History CSV
-        if os.path.exists('data/sample_data.csv'):
-            sales_df = pd.read_csv('data/sample_data.csv')
+        sample_path = get_data_path('sample_data.csv')
+        if os.path.exists(sample_path):
+            sales_df = pd.read_csv(sample_path)
             # Validate dates are not in future
             sales_df['date'] = pd.to_datetime(sales_df['date'])
             today = pd.Timestamp.today()

@@ -1,11 +1,10 @@
 import pandas as pd
 import os
+from models.database_manager import connect_db, get_data_path
 
 def export_action_plan(analysis_df, user_id):
     """Generates a text file list of exactly what needs to be bought."""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    report_path = os.path.join(project_root, 'data', f'purchase_order_suggestions_user_{user_id}.txt')
+    report_path = get_data_path(f'purchase_order_suggestions_user_{user_id}.txt')
     
     with open(report_path, 'w') as f:
         f.write("=== WEEKLY PURCHASE ORDER SUGGESTIONS ===\n")
@@ -30,10 +29,7 @@ def run_gap_analysis(user_id):
     print(f"!!! ANALYZING INVENTORY FOR USER {user_id} !!!")
     
     # 1. Setup Paths
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    # Use user-specific forecast file
-    forecast_path = os.path.join(project_root, 'data', f'forecast_user_{user_id}.csv')
+    forecast_path = get_data_path(f'forecast_user_{user_id}.csv')
 
     # Check if forecast file exists
     if not os.path.exists(forecast_path):
@@ -44,8 +40,7 @@ def run_gap_analysis(user_id):
     forecast_df = pd.read_csv(forecast_path)
     
     # Load inventory from database instead of CSV
-    import sqlite3
-    conn = sqlite3.connect(os.path.join(project_root, 'inventory_system.db'))
+    conn = connect_db()
     stock_df = pd.read_sql("SELECT product, current_stock, reorder_point FROM inventory WHERE user_id = ?", conn, params=(user_id,))
     conn.close()
 
