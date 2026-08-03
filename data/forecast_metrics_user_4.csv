@@ -1,3 +1,0 @@
-product,data_points,forecast_status,accuracy,mae,mse,rmse,mape,mase
-Test_Rice_1kg,30,Success,90.3%,2.75,10.02,3.17,9.74,0.98
-Test_Sugar_2kg,30,Success,89.3%,2.24,6.29,2.51,10.69,0.97

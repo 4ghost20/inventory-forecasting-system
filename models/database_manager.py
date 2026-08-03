@@ -71,16 +71,26 @@ def ensure_admin_exists(cursor):
 
 def cleanup_expired_sessions(days=SESSION_DAYS):
     """Delete old browser sessions so login tokens do not last forever."""
-    conn = connect_db()
-    c = conn.cursor()
-    c.execute(
-        '''DELETE FROM user_sessions
-           WHERE datetime(COALESCE(expires_at, created_at)) < datetime('now')
-              OR datetime(created_at) < datetime('now', ?)''',
-        (f'-{days} days',)
-    )
-    conn.commit()
-    conn.close()
+    conn = None
+    try:
+        conn = connect_db()
+        c = conn.cursor()
+        c.execute(
+            '''DELETE FROM user_sessions
+               WHERE datetime(COALESCE(expires_at, created_at)) < datetime('now')
+                  OR datetime(created_at) < datetime('now', ?)''',
+            (f'-{days} days',)
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "database is locked" not in str(e).lower():
+            raise
+        if conn:
+            conn.rollback()
+        print("Warning: database was locked while cleaning expired sessions; startup will continue.")
+    finally:
+        if conn:
+            conn.close()
 
 def init_db():
     """Initializes the database schema if tables do not exist."""
