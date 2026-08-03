@@ -270,6 +270,39 @@ class DatabaseManagerTests(unittest.TestCase):
         self.assertGreaterEqual(busy_timeout, 30000)
         self.assertEqual(foreign_keys, 1)
 
+    def test_forecast_cache_and_query_indexes_are_created(self):
+        conn = sqlite3.connect(get_db_path())
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        indexes = {
+            row[1]
+            for row in conn.execute(
+                "SELECT type, name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        cache_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(forecast_cache)")
+        }
+        conn.close()
+
+        self.assertIn("forecast_cache", tables)
+        self.assertTrue({
+            "user_id", "product_id", "forecast_json", "mae", "mse",
+            "rmse", "mape", "mase", "accuracy_label", "last_trained",
+            "stale", "data_signature"
+        }.issubset(cache_columns))
+        self.assertTrue({
+            "idx_sales_user_product",
+            "idx_sales_date",
+            "idx_sales_user_product_date",
+            "idx_forecast_cache_user_product"
+        }.issubset(indexes))
+
 
 if __name__ == "__main__":
     unittest.main()

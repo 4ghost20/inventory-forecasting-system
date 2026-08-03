@@ -117,16 +117,90 @@ def init_db():
                  (id INTEGER PRIMARY KEY, user_id INTEGER, product TEXT, 
                   date TEXT, quantity INTEGER)''')
 
+    c.execute('''CREATE TABLE IF NOT EXISTS forecast_cache
+                 (id INTEGER PRIMARY KEY,
+                  user_id INTEGER NOT NULL,
+                  product_id TEXT NOT NULL,
+                  forecast_json TEXT NOT NULL,
+                  mae REAL,
+                  mse REAL,
+                  rmse REAL,
+                  mape REAL,
+                  mase REAL,
+                  accuracy_label TEXT,
+                  forecast_status TEXT,
+                  data_points INTEGER DEFAULT 0,
+                  data_signature TEXT,
+                  stale INTEGER DEFAULT 0,
+                  last_trained TEXT,
+                  UNIQUE(user_id, product_id))''')
+
     try:
         c.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_user_product
                      ON inventory(user_id, product)''')
     except sqlite3.IntegrityError:
         print("Warning: duplicate inventory products exist; unique index was not created.")
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_sales_user_product
+                 ON sales(user_id, product)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_sales_date
+                 ON sales(date)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_sales_user_product_date
+                 ON sales(user_id, product, date)''')
+    c.execute('''CREATE INDEX IF NOT EXISTS idx_forecast_cache_user_product
+                 ON forecast_cache(user_id, product_id)''')
     ensure_auth_schema(c)
     ensure_admin_exists(c)
     conn.commit()
     conn.close()
     cleanup_expired_sessions()
+
+
+def mark_forecast_cache_stale(user_id, products=None):
+    """Mark cached forecasts stale after sales or inventory changes."""
+    conn = None
+    try:
+        conn = connect_db()
+        c = conn.cursor()
+        if products is None:
+            c.execute("UPDATE forecast_cache SET stale = 1 WHERE user_id = ?", (user_id,))
+        else:
+            product_list = sorted({str(product).strip() for product in products if str(product).strip()})
+            c.executemany(
+                "UPDATE forecast_cache SET stale = 1 WHERE user_id = ? AND product_id = ?",
+                [(user_id, product) for product in product_list]
+            )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if conn:
+            conn.rollback()
+        print(f"Warning: forecast cache could not be marked stale: {e}")
+    finally:
+        if conn:
+            conn.close()
+
+
+def delete_forecast_cache_for_products(user_id, products):
+    """Remove cached forecasts for products that no longer exist."""
+    product_list = sorted({str(product).strip() for product in products if str(product).strip()})
+    if not product_list:
+        return
+
+    conn = None
+    try:
+        conn = connect_db()
+        c = conn.cursor()
+        c.executemany(
+            "DELETE FROM forecast_cache WHERE user_id = ? AND product_id = ?",
+            [(user_id, product) for product in product_list]
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if conn:
+            conn.rollback()
+        print(f"Warning: forecast cache could not be deleted: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 def register_user(username, password):
     """Hashes password and saves new user if username is unique."""
@@ -387,6 +461,7 @@ def add_sales_record(user_id, product, date, quantity):
                   (user_id, product, str(date), quantity))
 
         conn.commit()
+        mark_forecast_cache_stale(user_id, [product])
         return True
     except Exception as e:
         conn.rollback()
@@ -403,6 +478,7 @@ def update_stock_level(user_id, product_name, added_qty):
                  WHERE product = ? AND user_id = ?''', (added_qty, product_name, user_id))
     conn.commit()
     conn.close()
+    mark_forecast_cache_stale(user_id, [product_name])
 
 def add_new_inventory_item(user_id, product_name, starting_stock, reorder_point):
     """Registers a brand new product for the user."""
@@ -419,6 +495,7 @@ def add_new_inventory_item(user_id, product_name, starting_stock, reorder_point)
         c.execute('''INSERT INTO inventory (user_id, product, current_stock, reorder_point) 
                      VALUES (?, ?, ?, ?)''', (user_id, product_name, starting_stock, reorder_point))
         conn.commit()
+        mark_forecast_cache_stale(user_id, [product_name])
         return True
     except sqlite3.IntegrityError:
         return False
@@ -469,6 +546,7 @@ def upsert_inventory_item(user_id, product_name, current_stock=None, reorder_poi
             )
 
         conn.commit()
+        mark_forecast_cache_stale(user_id, [product_name])
         return True
     except Exception as e:
         conn.rollback()
@@ -641,10 +719,18 @@ def bulk_import_sales(user_id, import_df):
 
         conn.commit()
         imported = len(sales_rows)
-        return {'success': imported > 0, 'imported': imported, 'skipped': skipped, 'errors': errors}
+        affected_products = sorted({row[1] for row in sales_rows})
+        mark_forecast_cache_stale(user_id, affected_products)
+        return {
+            'success': imported > 0,
+            'imported': imported,
+            'skipped': skipped,
+            'errors': errors,
+            'affected_products': affected_products
+        }
     except Exception as e:
         conn.rollback()
-        return {'success': False, 'imported': 0, 'skipped': skipped, 'errors': [str(e)]}
+        return {'success': False, 'imported': 0, 'skipped': skipped, 'errors': [str(e)], 'affected_products': []}
     finally:
         conn.close()
 
@@ -656,6 +742,7 @@ def delete_product_fully(user_id, product_name):
     c.execute("DELETE FROM sales WHERE product = ? AND user_id = ?", (product_name, user_id))
     conn.commit()
     conn.close()
+    delete_forecast_cache_for_products(user_id, [product_name])
 
 def delete_transaction(table_name, record_id, user_id):
     """Removes a specific record (e.g., one mistaken sales entry)."""
@@ -682,6 +769,7 @@ def delete_transaction(table_name, record_id, user_id):
             (quantity, product, user_id)
         )
         conn.commit()
+        mark_forecast_cache_stale(user_id, [product])
         return True
     except Exception as e:
         conn.rollback()
@@ -707,6 +795,8 @@ def update_reorder_point(user_id, product_name, reorder_point):
     conn.commit()
     updated = c.rowcount > 0
     conn.close()
+    if updated:
+        mark_forecast_cache_stale(user_id, [product_name])
     return updated
 
 def migrate_csv_to_sql(user_id):

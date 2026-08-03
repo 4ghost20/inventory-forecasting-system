@@ -8,13 +8,14 @@ from models.database_manager import (
     get_user_by_session, delete_user_session, bulk_import_sales,
     get_data_path, update_reorder_point, connect_db, get_user_profile,
     change_user_password, list_users, reset_user_password, set_user_admin,
-    delete_user_sessions
+    delete_user_sessions, mark_forecast_cache_stale
 )
-from models.forecaster import run_inventory_check
+from models.forecaster import run_inventory_check, start_background_inventory_check
 from models.analyzer import run_gap_analysis
 
-def clear_user_forecast_cache(user_id):
+def clear_user_forecast_cache(user_id, products=None):
     """Remove saved forecast outputs after data changes."""
+    mark_forecast_cache_stale(user_id, products)
     for filename in [f'forecast_user_{user_id}.csv', f'forecast_metrics_user_{user_id}.csv']:
         path = get_data_path(filename)
         if os.path.exists(path):
@@ -305,7 +306,9 @@ else:
                         with st.spinner("Importing rows..."):
                             result = bulk_import_sales(uid, import_df)
                         if result['success']:
-                            clear_user_forecast_cache(uid)
+                            affected_products = result.get('affected_products', [])
+                            clear_user_forecast_cache(uid, affected_products)
+                            start_background_inventory_check(uid, affected_products)
                             st.success(f"Imported {result['imported']} sales rows. Skipped {result['skipped']} rows.")
                             if result['errors']:
                                 st.warning("Some rows were skipped: " + " | ".join(result['errors']))
@@ -341,7 +344,8 @@ else:
                         if not check.empty and check.iloc[0]['current_stock'] >= qs:
                             result = add_sales_record(uid, ps, ds, qs)
                             if result:
-                                clear_user_forecast_cache(uid)
+                                clear_user_forecast_cache(uid, [ps])
+                                start_background_inventory_check(uid, [ps])
                                 st.success("Sale logged and stock updated.")
                                 st.rerun()
                             else:
@@ -364,7 +368,8 @@ else:
                         st.error("Quantity must be greater than 0.")
                     else:
                         update_stock_level(uid, pr, qr)
-                        clear_user_forecast_cache(uid)
+                        clear_user_forecast_cache(uid, [pr])
+                        start_background_inventory_check(uid, [pr])
                         st.success(f"Added {qr} units to {pr}.")
                         st.rerun()
 
@@ -386,7 +391,8 @@ else:
                         st.error("Reorder point must be greater than 0.")
                     else:
                         if add_new_inventory_item(uid, pn, sn, rp):
-                            clear_user_forecast_cache(uid)
+                            clear_user_forecast_cache(uid, [pn])
+                            start_background_inventory_check(uid, [pn])
                             st.success(f"{pn} registered with reorder point at {rp} units.")
                             st.rerun()
                         else:
@@ -407,8 +413,10 @@ else:
                 to_del_s = st.selectbox("Select Sale to Delete", s_opts)
                 if st.button("Delete Sale Entry", icon=":material/delete:"):
                     t_id = int(to_del_s.split("ID: ")[1].split(" |")[0])
+                    deleted_product = sales_hist.loc[sales_hist['id'] == t_id, 'product'].iloc[0]
                     if delete_transaction('sales', t_id, uid):
-                        clear_user_forecast_cache(uid)
+                        clear_user_forecast_cache(uid, [deleted_product])
+                        start_background_inventory_check(uid, [deleted_product])
                     st.rerun()
 
         with c_del2:
@@ -418,7 +426,8 @@ else:
                 to_del_i = st.selectbox("Select Product to Wipe", i_opts)
                 if st.button("Purge Product & History", icon=":material/delete_forever:"):
                     delete_product_fully(uid, to_del_i)
-                    clear_user_forecast_cache(uid)
+                    clear_user_forecast_cache(uid, [to_del_i])
+                    start_background_inventory_check(uid, [to_del_i])
                     st.rerun()
 
         st.subheader("Reorder Point")
@@ -430,7 +439,8 @@ else:
                 new_reorder = st.number_input("New Reorder Point", min_value=1, value=current_reorder)
                 if st.form_submit_button("Save Reorder Point", icon=":material/save:"):
                     if update_reorder_point(uid, edit_product, int(new_reorder)):
-                        clear_user_forecast_cache(uid)
+                        clear_user_forecast_cache(uid, [edit_product])
+                        start_background_inventory_check(uid, [edit_product])
                         st.success("Reorder point updated.")
                         st.rerun()
                     else:
