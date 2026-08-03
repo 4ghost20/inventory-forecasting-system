@@ -127,6 +127,35 @@ class DatabaseManagerTests(unittest.TestCase):
         self.assertEqual(second_result["imported"], 0)
         self.assertEqual(second_result["skipped"], 1)
 
+    def test_bulk_import_skips_duplicate_sales_in_same_file(self):
+        import_df = pd.DataFrame([
+            {
+                "date": dt.date.today().isoformat(),
+                "product": "Widget",
+                "quantity": 4,
+                "current_stock": 20,
+                "reorder_point": 5,
+            },
+            {
+                "date": dt.date.today().isoformat(),
+                "product": "Widget",
+                "quantity": 4,
+                "current_stock": 20,
+                "reorder_point": 5,
+            },
+        ])
+
+        result = bulk_import_sales(self.user_id, import_df)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["imported"], 1)
+        self.assertEqual(result["skipped"], 1)
+
+        conn = sqlite3.connect(get_db_path())
+        sale_count = conn.execute("SELECT COUNT(*) FROM sales").fetchone()[0]
+        conn.close()
+        self.assertEqual(sale_count, 1)
+
     def test_update_reorder_point(self):
         add_new_inventory_item(self.user_id, "Widget", 10, 5)
 

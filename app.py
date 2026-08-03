@@ -302,7 +302,8 @@ else:
                     st.caption(f"Previewing first 20 rows from {len(import_df)} total rows.")
 
                     if st.button("Import File", icon=":material/upload_file:"):
-                        result = bulk_import_sales(uid, import_df)
+                        with st.spinner("Importing rows..."):
+                            result = bulk_import_sales(uid, import_df)
                         if result['success']:
                             clear_user_forecast_cache(uid)
                             st.success(f"Imported {result['imported']} sales rows. Skipped {result['skipped']} rows.")

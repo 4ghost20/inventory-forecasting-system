@@ -486,18 +486,50 @@ def bulk_import_sales(user_id, import_df):
 
     conn = connect_db()
     c = conn.cursor()
-    imported = 0
     skipped = 0
     errors = []
     today = pd.Timestamp.today().normalize()
 
     try:
-        for row_number, row in import_df.iterrows():
-            line = row_number + 2
+        c.execute(
+            "SELECT product, date, quantity FROM sales WHERE user_id = ?",
+            (user_id,)
+        )
+        existing_sales = set(c.fetchall())
+        seen_sales = set()
+        sales_rows = []
+        imported_inventory = {}
+
+        working_df = import_df.reset_index(drop=True).copy()
+        prepared_df = pd.DataFrame({
+            'line_number': working_df.index + 2,
+            'product': working_df['product'].astype(str).str.strip(),
+            'sale_date': pd.to_datetime(working_df['date'], errors='coerce'),
+            'quantity': pd.to_numeric(working_df['quantity'], errors='coerce')
+        })
+
+        if 'current_stock' in working_df.columns:
+            prepared_df['has_current_stock'] = working_df['current_stock'].notna()
+            prepared_df['current_stock'] = pd.to_numeric(working_df['current_stock'], errors='coerce')
+        else:
+            prepared_df['has_current_stock'] = False
+            prepared_df['current_stock'] = None
+
+        if 'reorder_point' in working_df.columns:
+            prepared_df['has_reorder_point'] = working_df['reorder_point'].notna()
+            prepared_df['reorder_point'] = pd.to_numeric(working_df['reorder_point'], errors='coerce')
+        else:
+            prepared_df['has_reorder_point'] = False
+            prepared_df['reorder_point'] = None
+
+        def add_error(line, message):
+            if len(errors) < 5:
+                errors.append(f"Row {line}: {message}")
+
+        for row in prepared_df.itertuples(index=False):
             try:
-                product = str(row['product']).strip()
-                sale_date = pd.to_datetime(row['date'], errors='coerce')
-                quantity = pd.to_numeric(row['quantity'], errors='coerce')
+                product = row.product
+                sale_date = row.sale_date
 
                 if not product or product.lower() == 'nan':
                     raise ValueError("product is empty")
@@ -505,87 +537,114 @@ def bulk_import_sales(user_id, import_df):
                     raise ValueError("date is invalid")
                 if sale_date.normalize() > today:
                     raise ValueError("date is in the future")
-                if pd.isna(quantity) or int(quantity) <= 0:
+                if pd.isna(row.quantity) or int(row.quantity) <= 0:
                     raise ValueError("quantity must be greater than 0")
+                quantity = int(row.quantity)
 
                 current_stock = None
                 reorder_point = None
-                if 'current_stock' in import_df.columns and not pd.isna(row.get('current_stock')):
-                    current_stock = int(pd.to_numeric(row.get('current_stock'), errors='raise'))
+                if row.has_current_stock:
+                    if pd.isna(row.current_stock):
+                        raise ValueError("current_stock must be a number")
+                    current_stock = int(row.current_stock)
                     if current_stock < 0:
                         raise ValueError("current_stock cannot be negative")
-                if 'reorder_point' in import_df.columns and not pd.isna(row.get('reorder_point')):
-                    reorder_point = int(pd.to_numeric(row.get('reorder_point'), errors='raise'))
+                if row.has_reorder_point:
+                    if pd.isna(row.reorder_point):
+                        raise ValueError("reorder_point must be a number")
+                    reorder_point = int(row.reorder_point)
                     if reorder_point <= 0:
                         raise ValueError("reorder_point must be greater than 0")
 
                 normalized_date = sale_date.strftime('%Y-%m-%d')
+                sale_key = (product, normalized_date, quantity)
 
-                c.execute(
-                    '''SELECT 1 FROM sales
-                       WHERE user_id = ? AND product = ? AND date = ? AND quantity = ?
-                       LIMIT 1''',
-                    (user_id, product, normalized_date, int(quantity))
-                )
-                if c.fetchone():
+                if sale_key in existing_sales or sale_key in seen_sales:
                     skipped += 1
-                    if len(errors) < 5:
-                        errors.append(f"Row {line}: duplicate sale skipped")
+                    add_error(row.line_number, "duplicate sale skipped")
                     continue
 
-                c.execute(
-                    "SELECT id FROM inventory WHERE user_id = ? AND product = ?",
-                    (user_id, product)
+                seen_sales.add(sale_key)
+                sales_rows.append((user_id, product, normalized_date, quantity))
+                inventory_values = imported_inventory.setdefault(
+                    product,
+                    {'current_stock': None, 'reorder_point': None}
                 )
-                inventory_row = c.fetchone()
-
-                stock_value = 0 if current_stock is None else current_stock
-                reorder_value = 10 if reorder_point is None else reorder_point
-
-                if inventory_row:
-                    if current_stock is not None and reorder_point is not None:
-                        c.execute(
-                            '''UPDATE inventory
-                               SET current_stock = ?, reorder_point = ?
-                               WHERE id = ? AND user_id = ?''',
-                            (stock_value, reorder_value, inventory_row[0], user_id)
-                        )
-                    elif current_stock is not None:
-                        c.execute(
-                            '''UPDATE inventory
-                               SET current_stock = ?
-                               WHERE id = ? AND user_id = ?''',
-                            (stock_value, inventory_row[0], user_id)
-                        )
-                    elif reorder_point is not None:
-                        c.execute(
-                            '''UPDATE inventory
-                               SET reorder_point = ?
-                               WHERE id = ? AND user_id = ?''',
-                            (reorder_value, inventory_row[0], user_id)
-                        )
-                else:
-                    c.execute(
-                        '''INSERT INTO inventory (user_id, product, current_stock, reorder_point)
-                           VALUES (?, ?, ?, ?)''',
-                        (user_id, product, stock_value, reorder_value)
-                    )
-
-                c.execute(
-                    "INSERT INTO sales (user_id, product, date, quantity) VALUES (?, ?, ?, ?)",
-                    (user_id, product, normalized_date, int(quantity))
-                )
-                imported += 1
+                if current_stock is not None:
+                    inventory_values['current_stock'] = current_stock
+                if reorder_point is not None:
+                    inventory_values['reorder_point'] = reorder_point
             except Exception as e:
                 skipped += 1
-                if len(errors) < 5:
-                    errors.append(f"Row {line}: {e}")
+                add_error(row.line_number, str(e))
+
+        c.execute(
+            "SELECT product FROM inventory WHERE user_id = ?",
+            (user_id,)
+        )
+        existing_inventory = {row[0] for row in c.fetchall()}
+
+        new_inventory_rows = []
+        update_both_rows = []
+        update_stock_rows = []
+        update_reorder_rows = []
+
+        for product, values in imported_inventory.items():
+            current_stock = values['current_stock']
+            reorder_point = values['reorder_point']
+            stock_value = 0 if current_stock is None else current_stock
+            reorder_value = 10 if reorder_point is None else reorder_point
+
+            if product in existing_inventory:
+                if current_stock is not None and reorder_point is not None:
+                    update_both_rows.append((stock_value, reorder_value, product, user_id))
+                elif current_stock is not None:
+                    update_stock_rows.append((stock_value, product, user_id))
+                elif reorder_point is not None:
+                    update_reorder_rows.append((reorder_value, product, user_id))
+            else:
+                new_inventory_rows.append((user_id, product, stock_value, reorder_value))
+
+        if new_inventory_rows:
+            c.executemany(
+                '''INSERT INTO inventory (user_id, product, current_stock, reorder_point)
+                   VALUES (?, ?, ?, ?)''',
+                new_inventory_rows
+            )
+        if update_both_rows:
+            c.executemany(
+                '''UPDATE inventory
+                   SET current_stock = ?, reorder_point = ?
+                   WHERE product = ? AND user_id = ?''',
+                update_both_rows
+            )
+        if update_stock_rows:
+            c.executemany(
+                '''UPDATE inventory
+                   SET current_stock = ?
+                   WHERE product = ? AND user_id = ?''',
+                update_stock_rows
+            )
+        if update_reorder_rows:
+            c.executemany(
+                '''UPDATE inventory
+                   SET reorder_point = ?
+                   WHERE product = ? AND user_id = ?''',
+                update_reorder_rows
+            )
+
+        if sales_rows:
+            c.executemany(
+                "INSERT INTO sales (user_id, product, date, quantity) VALUES (?, ?, ?, ?)",
+                sales_rows
+            )
 
         conn.commit()
+        imported = len(sales_rows)
         return {'success': imported > 0, 'imported': imported, 'skipped': skipped, 'errors': errors}
     except Exception as e:
         conn.rollback()
-        return {'success': False, 'imported': imported, 'skipped': skipped, 'errors': [str(e)]}
+        return {'success': False, 'imported': 0, 'skipped': skipped, 'errors': [str(e)]}
     finally:
         conn.close()
 
