@@ -23,8 +23,11 @@ def clear_user_forecast_cache(user_id):
 def standardize_import_columns(df):
     """Normalize common spreadsheet column names to the app's expected names."""
     aliases = {
+        'invoicedate': 'date',
+        'invoice_date': 'date',
         'sale_date': 'date',
         'date_of_sale': 'date',
+        'description': 'product',
         'item': 'product',
         'item_name': 'product',
         'product_name': 'product',
